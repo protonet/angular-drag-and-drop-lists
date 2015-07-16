@@ -36,6 +36,8 @@ angular.module('dndLists', [])
    * - dnd-copied         Same as dnd-moved, just that it is called when the element was copied
    *                      instead of moved. The original dragend event will be provided in the local
    *                      event variable.
+   * - dnd-dragend        Callback that is invoked when the element was dropped but neither moved
+   *                      nor copied.
    * - dnd-dragstart      Callback that is invoked when the element was dragged. The original
    *                      dragstart event will be provided in the local event variable.
    * - dnd-type           Use this attribute if you have different kinds of items in your
@@ -127,6 +129,9 @@ angular.module('dndLists', [])
             case "copy":
               $parse(attr.dndCopied)(scope, {event: event});
               break;
+
+            default:
+              $parse(attr.dndDragend)(scope, {event: event});
           }
         });
 
@@ -186,6 +191,8 @@ angular.module('dndLists', [])
    *                        - event: The original dragover event sent by the browser.
    *                        - index: The position in the list at which the element would be dropped.
    *                        - type: The dnd-type set on the dnd-draggable, or undefined if unset.
+   * - dnd-dragleave        Optional expression that is invoked when an element is dragged outside
+   *                        the list.
    * - dnd-drop             Optional expression that is invoked when an element is dropped over the
    *                        list. If the expression is set, it must return the object that will be
    *                        inserted into the list. If it returns false, the drop will be aborted
@@ -210,73 +217,172 @@ angular.module('dndLists', [])
    */
   .directive('dndList', ['$parse', '$timeout', 'dndDropEffectWorkaround', 'dndDragTypeWorkaround',
                  function($parse,   $timeout,   dndDropEffectWorkaround,   dndDragTypeWorkaround) {
+
+    var matches, fnNames = [
+      'matches',
+      'webkitMatchesSelector',
+      'mozMatchesSelector',
+      'msMatchesSelector',
+      'oMatchesSelector'
+    ];
+    fnNames.some(function (fnName) {
+      if (typeof document.body[fnName] === 'function') {
+        matches = fnName;
+        return true;
+      }
+    });
+
+    var filter  = Array.prototype.filter;
+    var forEach = Array.prototype.forEach;
+    var indexOf = Array.prototype.indexOf;
+
+    function getCenter(el) { // horizontal
+      return el.offsetLeft + el.offsetWidth / 2.0;
+    }
+    function getMiddle(el) { // vertical
+      return el.offsetTop + el.offsetHeight / 2.0;
+    }
+
+    function nearest(num, haystack, fn) {
+      var index = Math.floor(haystack.length / 2)
+      var value = haystack[index] * 1, nextValue;
+      var direction = num < value ? -1 : 1;
+      var distance, nextDistance;
+
+      while (true) {
+        distance = Math.abs(value - num);
+
+        nextValue = haystack[index + direction] * 1;
+        if (!nextValue) return fn(value);
+
+        nextDistance = Math.abs(nextValue - num);
+        if (distance < nextDistance) {
+          return fn(value);
+        }
+
+        index = index + direction;
+        value = nextValue;
+      }
+    }
+
     return function(scope, element, attr) {
-      // While an element is dragged over the list, this placeholder element is inserted
-      // at the location where the element would be inserted after dropping
-      var placeholder = angular.element("<li class='dndPlaceholder'></li>");
-      var placeholderNode = placeholder[0];
       var listNode = element[0];
+      var current = {};
 
       var horizontal = attr.dndHorizontalList && scope.$eval(attr.dndHorizontalList);
       var externalSources = attr.dndExternalSources && scope.$eval(attr.dndExternalSources);
+      var selector = attr.dndSelector || 'li';
+
+      var rows;
+
+      function cacheRows() { // cash cows?
+        var rowBottom = 0, row;
+        var children = filter.call(listNode.children, function (node) {
+          return node[matches](selector);
+        });
+
+        // clear cache
+        rows = {};
+
+        forEach.call(children, function (el) {
+          var elementBottom, center, middle, columns, elements;
+
+          if (el.offsetHeight === 0) return;
+          elementBottom = el.offsetTop + el.offsetHeight;
+
+          if (rowBottom < elementBottom) {
+            center = getCenter(el);
+            columns = [center];
+            elements = {};
+            elements[center] = el;
+
+            row = {
+              columns: columns,
+              elements: elements
+            };
+
+            middle = getMiddle(el);
+            rows[middle] = row;
+
+            rowBottom = elementBottom;
+          } else {
+            center = getCenter(el);
+            row.columns.push(center);
+            row.elements[center] = el;
+          }
+        });
+      }
+
+      // TODO on resize, use Observers and/or both for IEs sake
+      // delay execution until resize is finished
+      listNode.addEventListener('DOMSubtreeModified', cacheRows);
+
+      function findColumnAt(x, y) {
+        return nearest(y, Object.keys(rows), function (middle) {
+          return nearest(x, rows[middle].columns, function (center) {
+            return {
+              element:    rows[middle].elements[center],
+              horizontal: x <= center ? 0 : 1,
+              vertical:   y <= middle ? 0 : 1
+            }
+          });
+        });
+      }
+
+      function handleNewColumn(col) {
+        var old;
+
+        if (col.element    !== current.element ||
+            col.horizontal !== current.horizontal ||
+            col.vertical   !== current.vertical) {
+
+          old = current;
+          current = col;
+
+          invokeCallback(attr.dndChange, null, null, current);
+        }
+      }
+
+      function getIndex() {
+        var children = filter.call(listNode.children, function (node) {
+          return node[matches](selector);
+        });
+        var index = indexOf.call(children, current.element);
+
+        return horizontal ?
+          index + current.horizontal :
+          index + current.vertical;
+      }
+
+      element.on('dragenter', cacheRows);
 
       /**
        * The dragover event is triggered "every few hundred milliseconds" while an element
        * is being dragged over our list, or over an child element.
        */
       element.on('dragover', function(event) {
-        event = event.originalEvent || event;
+        var x    = event.offsetX || event.layerX;
+        var y    = event.offsetY || event.layerY;
+        var node = event.target;
+        var column;
 
+        event = event.originalEvent || event;
         if (!isDropAllowed(event)) return true;
 
-        // First of all, make sure that the placeholder is shown
-        // This is especially important if the list is empty
-        if (placeholderNode.parentNode != listNode) {
-          element.append(placeholder);
-        }
+        if (node !== listNode) {
+          while (node.parentNode !== listNode) node = node.parentNode;
 
-        if (event.target !== listNode) {
-          // Try to find the node direct directly below the list node.
-          var listItemNode = event.target;
-          while (listItemNode.parentNode !== listNode && listItemNode.parentNode) {
-            listItemNode = listItemNode.parentNode;
-          }
-
-          if (listItemNode.parentNode === listNode && listItemNode !== placeholderNode) {
-            // If the mouse pointer is in the upper half of the child element,
-            // we place it before the child element, otherwise below it.
-            if (isMouseInFirstHalf(event, listItemNode)) {
-              listNode.insertBefore(placeholderNode, listItemNode);
-            } else {
-              listNode.insertBefore(placeholderNode, listItemNode.nextSibling);
-            }
-          }
+          handleNewColumn({
+            element:    node,
+            horizontal: x + node.offsetLeft <= getCenter(node) ? 0 : 1,
+            vertical:   y + node.offsetTop <= getMiddle(node) ? 0 : 1
+          });
         } else {
-          // This branch is reached when we are dragging directly over the list element.
-          // Usually we wouldn't need to do anything here, but the IE does not fire it's
-          // events for the child element, only for the list directly. Therefore we repeat
-          // the positioning algorithm for IE here.
-          if (isMouseInFirstHalf(event, placeholderNode, true)) {
-            // Check if we should move the placeholder element one spot towards the top.
-            // Note that display none elements will have offsetTop and offsetHeight set to
-            // zero, therefore we need a special check for them.
-            while (placeholderNode.previousElementSibling
-                 && (isMouseInFirstHalf(event, placeholderNode.previousElementSibling, true)
-                 || placeholderNode.previousElementSibling.offsetHeight === 0)) {
-              listNode.insertBefore(placeholderNode, placeholderNode.previousElementSibling);
-            }
-          } else {
-            // Check if we should move the placeholder element one spot towards the bottom
-            while (placeholderNode.nextElementSibling &&
-                 !isMouseInFirstHalf(event, placeholderNode.nextElementSibling, true)) {
-              listNode.insertBefore(placeholderNode,
-                  placeholderNode.nextElementSibling.nextElementSibling);
-            }
-          }
+          column = findColumnAt(x, y);
+          if (column) handleNewColumn(column);
         }
 
         // At this point we invoke the callback, which still can disallow the drop.
-        // We can't do this earlier because we want to pass the index of the placeholder.
         if (attr.dndDragover && !invokeCallback(attr.dndDragover, event)) {
           return stopDragover();
         }
@@ -322,7 +428,7 @@ angular.module('dndLists', [])
         // Retrieve the JSON array and insert the transferred object into it.
         var targetArray = scope.$eval(attr.dndList);
         scope.$apply(function() {
-          targetArray.splice(getPlaceholderIndex(), 0, transferredObject);
+          targetArray.splice(getIndex(), 0, transferredObject);
         });
 
         // In Chrome on Windows the dropEffect will always be none...
@@ -358,35 +464,14 @@ angular.module('dndLists', [])
         element.removeClass("dndDragover");
         $timeout(function() {
           if (!element.hasClass("dndDragover")) {
-            placeholder.remove();
+            index = undefined;
+
+            scope.$apply(function() {
+              $parse(attr.dndDragleave)(scope, { event: event });
+            });
           }
         }, 100);
       });
-
-      /**
-       * Checks whether the mouse pointer is in the first half of the given target element.
-       *
-       * In Chrome we can just use offsetY, but in Firefox we have to use layerY, which only
-       * works if the child element has position relative. In IE the events are only triggered
-       * on the listNode instead of the listNodeItem, therefore the mouse positions are
-       * relative to the parent element of targetNode.
-       */
-      function isMouseInFirstHalf(event, targetNode, relativeToParent) {
-        var mousePointer = horizontal ? (event.offsetX || event.layerX)
-                                      : (event.offsetY || event.layerY);
-        var targetSize = horizontal ? targetNode.offsetWidth : targetNode.offsetHeight;
-        var targetPosition = horizontal ? targetNode.offsetLeft : targetNode.offsetTop;
-        targetPosition = relativeToParent ? targetPosition : 0;
-        return mousePointer < targetPosition + targetSize / 2;
-      }
-
-      /**
-       * We use the position of the placeholder node to determine at which position of the array the
-       * object needs to be inserted
-       */
-      function getPlaceholderIndex() {
-        return Array.prototype.indexOf.call(listNode.children, placeholderNode);
-      }
 
       /**
        * Checks various conditions that must be fulfilled for a drop to be allowed
@@ -418,7 +503,6 @@ angular.module('dndLists', [])
        * Small helper function that cleans up if we aborted a drop.
        */
       function stopDragover() {
-        placeholder.remove();
         element.removeClass("dndDragover");
         return true;
       }
@@ -429,10 +513,11 @@ angular.module('dndLists', [])
       function invokeCallback(expression, event, item) {
         return $parse(expression)(scope, {
           event: event,
-          index: getPlaceholderIndex(),
+          index: getIndex(),
           item: item || undefined,
           external: !dndDragTypeWorkaround.isDragging,
-          type: dndDragTypeWorkaround.isDragging ? dndDragTypeWorkaround.dragType : undefined
+          type: dndDragTypeWorkaround.isDragging ? dndDragTypeWorkaround.dragType : undefined,
+          current: current
         });
       }
 

@@ -1,8 +1,13 @@
 angular.module("demo").controller("AdvancedDemoController", function($scope) {
 
-    $scope.dragoverCallback = function(event, index, external, type) {
+    $scope.dragoverCallback = function(event, index, external, type, foo, current) {
         $scope.logListEvent('dragged over', event, index, external, type);
-        return index > 0;
+        // return index > 0;
+        return true;
+    };
+
+    $scope.trackChanges = function (index, column) {
+      // console.log(index);
     };
 
     $scope.dropCallback = function(event, index, item, external, type, allowedType) {
@@ -15,11 +20,11 @@ angular.module("demo").controller("AdvancedDemoController", function($scope) {
     };
 
     $scope.logEvent = function(message, event) {
-        console.log(message, '(triggered by the following', event.type, 'event)');
-        console.log(event);
+        // console.log(message, '(triggered by the following', event.type, 'event)');
+        // console.debug(event);
     };
 
-    $scope.logListEvent = function(action, event, index, external, type) {
+    $scope.logListEvent = function(action, event, index, external, type, current) {
         var message = external ? 'External ' : '';
         message += type + ' element is ' + action + ' position ' + index;
         $scope.logEvent(message, event);
