@@ -113,13 +113,15 @@ angular.module('dndLists', [])
        * we will invoke the callbacks specified with the dnd-moved or dnd-copied attribute.
        */
       element.on('dragend', function(event) {
+        var dropEffect;
+
         event = event.originalEvent || event;
 
         // Invoke callbacks. Usually we would use event.dataTransfer.dropEffect to determine
         // the used effect, but Chrome has not implemented that field correctly. On Windows
         // it always sets it to 'none', while Chrome on Linux sometimes sets it to something
         // else when it's supposed to send 'none' (drag operation aborted).
-        var dropEffect = dndDropEffectWorkaround.dropEffect;
+        dropEffect = dndDropEffectWorkaround.dropEffect;
         scope.$apply(function() {
           switch (dropEffect) {
             case "move":
@@ -218,42 +220,59 @@ angular.module('dndLists', [])
   .directive('dndList', ['$parse', '$timeout', 'dndDropEffectWorkaround', 'dndDragTypeWorkaround',
                  function($parse,   $timeout,   dndDropEffectWorkaround,   dndDragTypeWorkaround) {
 
-    var matches, fnNames = [
-      'matches',
-      'webkitMatchesSelector',
-      'mozMatchesSelector',
-      'msMatchesSelector',
-      'oMatchesSelector'
-    ];
-    fnNames.some(function (fnName) {
-      if (typeof document.body[fnName] === 'function') {
-        matches = fnName;
-        return true;
-      }
-    });
-
     var filter  = Array.prototype.filter;
     var forEach = Array.prototype.forEach;
     var indexOf = Array.prototype.indexOf;
 
+    // :scope is not available in all browsers, to ensure we have a list of
+    // filtered, direct children we use this cross-browser filter.
+    var querySelectChildren = (function () {
+      var matchesFnName;
+
+      [
+        'matches',
+        'webkitMatchesSelector',
+        'mozMatchesSelector',
+        'msMatchesSelector',
+        'oMatchesSelector'
+      ].
+
+      some(function (fnName) {
+        if (typeof document.body[fnName] === 'function') {
+          matchesFnName = fnName;
+          return true;
+        }
+      });
+
+      function fn(parentNode, selector) {
+        return filter.call(parentNode.children, function (node) {
+          return node[matchesFnName](selector);
+        });
+      }
+
+      return fn;
+    })();
+
     function getCenter(el) { // horizontal
-      return el.offsetLeft + el.offsetWidth / 2.0;
+      return el.getBoundingClientRect().left + el.offsetWidth / 2.0;
     }
     function getMiddle(el) { // vertical
-      return el.offsetTop + el.offsetHeight / 2.0;
+      return el.getBoundingClientRect().top + el.offsetHeight / 2.0;
     }
 
     function nearest(num, haystack, fn) {
       var index = Math.floor(haystack.length / 2)
-      var value = haystack[index] * 1, nextValue;
+      var value = haystack[index], nextValue;
       var direction = num < value ? -1 : 1;
       var distance, nextDistance;
 
       while (true) {
         distance = Math.abs(value - num);
 
-        nextValue = haystack[index + direction] * 1;
-        if (!nextValue) return fn(value);
+        nextValue = haystack[index + direction];
+        if (!nextValue) {
+          return fn(value);
+        }
 
         nextDistance = Math.abs(nextValue - num);
         if (distance < nextDistance) {
@@ -267,127 +286,119 @@ angular.module('dndLists', [])
 
     return function(scope, element, attr) {
       var listNode = element[0];
-      var current = {};
+      var current = {}, index, counter = 0;
 
       var horizontal = attr.dndHorizontalList && scope.$eval(attr.dndHorizontalList);
       var externalSources = attr.dndExternalSources && scope.$eval(attr.dndExternalSources);
-      var selector = attr.dndSelector || 'li';
+      var selector = attr.dndSelector || '*';
 
-      var rows;
-
-      function cacheRows() { // cash cows?
-        var rowBottom = 0, row;
-        var children = filter.call(listNode.children, function (node) {
-          return node[matches](selector);
-        });
-
-        // clear cache
-        rows = {};
+      function buildGrid(children) {
+        var bottom = 0;
+        var grid = { rows: [], columns: {}, elements: {} };
 
         forEach.call(children, function (el) {
-          var elementBottom, center, middle, columns, elements;
+          var elementBottom, center, middle;
 
           if (el.offsetHeight === 0) return;
-          elementBottom = el.offsetTop + el.offsetHeight;
+          elementBottom = el.getBoundingClientRect().bottom;
 
-          if (rowBottom < elementBottom) {
-            center = getCenter(el);
-            columns = [center];
-            elements = {};
-            elements[center] = el;
+          center = getCenter(el);
+          middle = getMiddle(el);
 
-            row = {
-              columns: columns,
-              elements: elements
-            };
+          if (grid.columns[middle] === undefined) {
+            grid.rows.push(middle);
+            grid.columns[middle] = [center];
+            grid.elements[middle] = {};
 
-            middle = getMiddle(el);
-            rows[middle] = row;
-
-            rowBottom = elementBottom;
+            bottom = elementBottom;
           } else {
-            center = getCenter(el);
-            row.columns.push(center);
-            row.elements[center] = el;
+            grid.columns[middle].push(center);
           }
+
+          grid.elements[middle][center] = el;
         });
+
+        grid.bottom = bottom;
+
+        return grid;
       }
 
-      // TODO on resize, use Observers and/or both for IEs sake
-      // delay execution until resize is finished
-      listNode.addEventListener('DOMSubtreeModified', cacheRows);
-
       function findColumnAt(x, y) {
-        return nearest(y, Object.keys(rows), function (middle) {
-          return nearest(x, rows[middle].columns, function (center) {
+        var children = querySelectChildren(listNode, selector);
+        var grid = buildGrid(children);
+
+        if (grid.bottom < y) {
+          return {
+            element: children[children.length - 1],
+            horizontal: 1,
+            vertical: 1
+          }
+        }
+
+        return nearest(y, grid.rows, function (row) {
+          return nearest(x, grid.columns[row], function (column) {
             return {
-              element:    rows[middle].elements[center],
-              horizontal: x <= center ? 0 : 1,
-              vertical:   y <= middle ? 0 : 1
+              element:    grid.elements[row][column],
+              horizontal: x <= column ? 0 : 1,
+              vertical:   y <= row ? 0 : 1
             }
           });
         });
       }
 
       function handleNewColumn(col) {
-        var old;
+        current = col;
 
-        if (col.element    !== current.element ||
-            col.horizontal !== current.horizontal ||
-            col.vertical   !== current.vertical) {
+        if (getIndex() !== index) {
+          index = getIndex();
 
-          old = current;
-          current = col;
-
-          invokeCallback(attr.dndChange, null, null, current);
+          scope.$apply(function () {
+            invokeCallback(attr.dndChange, null, null, current);
+          });
         }
       }
 
       function getIndex() {
-        var children = filter.call(listNode.children, function (node) {
-          return node[matches](selector);
-        });
-        var index = indexOf.call(children, current.element);
+        var children = querySelectChildren(listNode, selector);
+        var idx = indexOf.call(children, current.element);
 
         return horizontal ?
-          index + current.horizontal :
-          index + current.vertical;
+          idx + current.horizontal :
+          idx + current.vertical;
       }
 
-      element.on('dragenter', cacheRows);
+      element.on('dragenter', function () {
+        counter++;
+      });
 
       /**
        * The dragover event is triggered "every few hundred milliseconds" while an element
        * is being dragged over our list, or over an child element.
        */
       element.on('dragover', function(event) {
-        var x    = event.offsetX || event.layerX;
-        var y    = event.offsetY || event.layerY;
-        var node = event.target;
+        var x, y, rect;
         var column;
 
         event = event.originalEvent || event;
         if (!isDropAllowed(event)) return true;
 
-        if (node !== listNode) {
-          while (node.parentNode !== listNode) node = node.parentNode;
+        rect = event.target.getBoundingClientRect();
+        x = (event.offsetX || event.layerX) + rect.left;
+        y = (event.offsetY || event.layerY) + rect.top;
 
-          handleNewColumn({
-            element:    node,
-            horizontal: x + node.offsetLeft <= getCenter(node) ? 0 : 1,
-            vertical:   y + node.offsetTop <= getMiddle(node) ? 0 : 1
-          });
-        } else {
-          column = findColumnAt(x, y);
-          if (column) handleNewColumn(column);
+        column = findColumnAt(x, y);
+
+        if (column) {
+          handleNewColumn(column);
         }
 
         // At this point we invoke the callback, which still can disallow the drop.
-        if (attr.dndDragover && !invokeCallback(attr.dndDragover, event)) {
+        if (attr.dndDragover && invokeCallback(attr.dndDragover, event) === false) {
           return stopDragover();
         }
 
         element.addClass("dndDragover");
+
         event.preventDefault();
         event.stopPropagation();
         return false;
@@ -399,8 +410,9 @@ angular.module('dndLists', [])
        * one child element per array element.
        */
       element.on('drop', function(event) {
-        event = event.originalEvent || event;
+        var data, transferredObject, targetArray;
 
+        event = event.originalEvent || event;
         if (!isDropAllowed(event)) return true;
 
         // The default behavior in Firefox is to interpret the dropped element as URL and
@@ -409,8 +421,9 @@ angular.module('dndLists', [])
 
         // Unserialize the data that was serialized in dragstart. According to the HTML5 specs,
         // the "Text" drag type will be converted to text/plain, but IE does not do that.
-        var data = event.dataTransfer.getData("Text") || event.dataTransfer.getData("text/plain");
-        var transferredObject;
+        data = event.dataTransfer.getData("Text") || event.dataTransfer.getData("text/plain");
+        transferredObject;
+
         try {
           transferredObject = JSON.parse(data);
         } catch(e) {
@@ -426,9 +439,9 @@ angular.module('dndLists', [])
         }
 
         // Retrieve the JSON array and insert the transferred object into it.
-        var targetArray = scope.$eval(attr.dndList);
+        targetArray = scope.$eval(attr.dndList);
         scope.$apply(function() {
-          targetArray.splice(getIndex(), 0, transferredObject);
+          targetArray.splice(index, 0, transferredObject);
         });
 
         // In Chrome on Windows the dropEffect will always be none...
@@ -460,17 +473,16 @@ angular.module('dndLists', [])
        */
       element.on('dragleave', function(event) {
         event = event.originalEvent || event;
+        event.preventDefault();
 
-        element.removeClass("dndDragover");
-        $timeout(function() {
-          if (!element.hasClass("dndDragover")) {
-            index = undefined;
+        counter--;
+        if (!counter) {
+          element.removeClass("dndDragover");
 
-            scope.$apply(function() {
-              $parse(attr.dndDragleave)(scope, { event: event });
-            });
-          }
-        }, 100);
+          scope.$apply(function() {
+            $parse(attr.dndDragleave)(scope, { event: event });
+          });
+        }
       });
 
       /**
@@ -503,6 +515,7 @@ angular.module('dndLists', [])
        * Small helper function that cleans up if we aborted a drop.
        */
       function stopDragover() {
+        counter = 0;
         element.removeClass("dndDragover");
         return true;
       }
@@ -513,7 +526,7 @@ angular.module('dndLists', [])
       function invokeCallback(expression, event, item) {
         return $parse(expression)(scope, {
           event: event,
-          index: getIndex(),
+          index: index,
           item: item || undefined,
           external: !dndDragTypeWorkaround.isDragging,
           type: dndDragTypeWorkaround.isDragging ? dndDragTypeWorkaround.dragType : undefined,
