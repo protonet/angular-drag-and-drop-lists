@@ -401,7 +401,6 @@ angular.module('dndLists', [])
 
         event.preventDefault();
         event.stopPropagation();
-        return false;
       });
 
       /**
@@ -547,6 +546,27 @@ angular.module('dndLists', [])
         return false;
       }
     };
+  }])
+
+  /*
+    dnd-placeholder-position: required, variable in scope that knows about the closest
+                              (by its index and distance) sibling
+    dnd-placeholder-orientation: optional, defaults to vertical
+  */
+  .directive('dndPlaceholder', [function () {
+    return function($scope, $element, attrs) {
+      var orientation = attrs.dndPlaceholderOrientation || 'vertical';
+
+      $scope.$watch(attrs.dndPlaceholderPosition, function (sibling) {
+        if (sibling === undefined) return;
+
+        if (sibling[orientation]) {
+          $(sibling.element).after($element);
+        } else {
+          $(sibling.element).before($element);
+        }
+      });
+    }
   }])
 
   /**
