@@ -253,6 +253,12 @@ angular.module('dndLists', [])
       return fn;
     })();
 
+    function visibleOnly(arrayOfElements) {
+      return arrayOfElements.filter(function(element) {
+        return element.offsetHeight > 0;
+      });
+    }
+
     function getCenter(el) { // horizontal
       return el.getBoundingClientRect().left + el.offsetWidth / 2.0;
     }
@@ -298,8 +304,6 @@ angular.module('dndLists', [])
 
         forEach.call(children, function (el) {
           var elementBottom, center, middle;
-
-          if (el.offsetHeight === 0) return;
           elementBottom = el.getBoundingClientRect().bottom;
 
           center = getCenter(el);
@@ -324,7 +328,7 @@ angular.module('dndLists', [])
       }
 
       function findColumnAt(x, y) {
-        var children = querySelectChildren(listNode, selector);
+        var children = visibleOnly(querySelectChildren(listNode, selector));
         var grid = buildGrid(children);
 
         if (grid.bottom < y) {
@@ -359,7 +363,7 @@ angular.module('dndLists', [])
       }
 
       function getIndex() {
-        var children = querySelectChildren(listNode, selector);
+        var children = visibleOnly(querySelectChildren(listNode, selector));
         var idx = indexOf.call(children, current.element);
 
         return horizontal ?
@@ -475,6 +479,7 @@ angular.module('dndLists', [])
         event.preventDefault();
 
         counter--;
+        
         if (!counter) {
           element.removeClass("dndDragover");
 
@@ -510,12 +515,16 @@ angular.module('dndLists', [])
         return true;
       }
 
+      element.on('stopDragover', function() {
+        counter = 0;
+        element.removeClass("dndDragover");
+      });
+
       /**
        * Small helper function that cleans up if we aborted a drop.
        */
       function stopDragover() {
-        counter = 0;
-        element.removeClass("dndDragover");
+        element.trigger('stopDragover');
         return true;
       }
 
@@ -523,14 +532,15 @@ angular.module('dndLists', [])
        * Invokes a callback with some interesting parameters and returns the callbacks return value.
        */
       function invokeCallback(expression, event, item) {
-        return $parse(expression)(scope, {
-          event: event,
-          index: index,
-          item: item || undefined,
+        var payload = {
+          event:    event,
+          index:    index,
+          item:     item || undefined,
           external: !dndDragTypeWorkaround.isDragging,
-          type: dndDragTypeWorkaround.isDragging ? dndDragTypeWorkaround.dragType : undefined,
-          current: current
-        });
+          type:     dndDragTypeWorkaround.isDragging ? dndDragTypeWorkaround.dragType : undefined,
+          current:  current
+        };
+        return $parse(expression)(scope, payload);
       }
 
       /**
@@ -549,23 +559,37 @@ angular.module('dndLists', [])
   }])
 
   /*
-    dnd-placeholder-position: required, variable in scope that knows about the closest
-                              (by its index and distance) sibling
-    dnd-placeholder-orientation: optional, defaults to vertical
+    position: required, scope variable that knows about the closest
+              (measured by its index and distance) sibling
+    orientation: optional, defaults to vertical
   */
-  .directive('dndPlaceholder', [function () {
-    return function($scope, $element, attrs) {
-      var orientation = attrs.dndPlaceholderOrientation || 'vertical';
+  .directive('dndPlaceholder', [function() {
+    return {
+      restrict: 'E',
+      link: function($scope, $element, attrs) {
+        var orientation = attrs.orientation || 'vertical';
+        var placeholder = $element.children();
 
-      $scope.$watch(attrs.dndPlaceholderPosition, function (sibling) {
-        if (sibling === undefined) return;
+        $element.detach();
 
-        if (sibling[orientation]) {
-          $(sibling.element).after($element);
-        } else {
-          $(sibling.element).before($element);
-        }
-      });
+        // RADAR when I know how to access the parent node:
+        //
+        // if (parentNode.children.length !== index) {
+        //   parentNode.insertBefore(placeholder, parentNode.children[index]);
+        // } else {
+        //   parentNode.appendChild(placeholder);
+        // }
+
+        $scope.$watch(attrs.position, function(sibling) {
+          if (sibling === undefined) return;
+
+          if (sibling[orientation]) {
+            $(sibling.element).after(placeholder);
+          } else {
+            $(sibling.element).before(placeholder);
+          }
+        });
+      }
     }
   }])
 
