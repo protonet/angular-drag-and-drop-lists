@@ -582,6 +582,7 @@ angular.module('dndLists', [])
 
         $scope.$watch(attrs.position, function(sibling) {
           if (sibling === undefined) return;
+          if (sibling === null) return placeholder.detach();
 
           if (sibling[orientation]) {
             $(sibling.element).after(placeholder);
