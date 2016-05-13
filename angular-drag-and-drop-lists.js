@@ -36,8 +36,7 @@ angular.module('dndLists', [])
    * - dnd-copied         Same as dnd-moved, just that it is called when the element was copied
    *                      instead of moved. The original dragend event will be provided in the local
    *                      event variable.
-   * - dnd-dragend        Callback that is invoked when the element was dropped but neither moved
-   *                      nor copied.
+   * - dnd-dragend        Callback that is invoked when the element was dropped.
    * - dnd-dragstart      Callback that is invoked when the element was dragged. The original
    *                      dragstart event will be provided in the local event variable.
    * - dnd-type           Use this attribute if you have different kinds of items in your
@@ -76,12 +75,27 @@ angular.module('dndLists', [])
         });
       }
 
+ 
+      /**
+       * Keep track of the mouseTarget so we can use a custom handle.
+       */
+      element.on('mousedown', function (event) {
+        mouseTarget = event.target;
+      });
+
       /**
        * When the drag operation is started we have to prepare the dataTransfer object,
        * which is the primary way we communicate with the target element
        */
       element.on('dragstart', function(event) {
+        if (attr.dndHandleClass && !mouseTarget.classList.contains(attr.dndHandleClass)) {
+          event.preventDefault();
+          return;
+        }
         event = event.originalEvent || event;
+
+        // Firefox (and maybe IE, too) ignores draggable=false on child nodes
+        if (element.attr('draggable') === 'false') return false;
 
         // Serialize the data associated with this element. IE only supports the Text drag type
         event.dataTransfer.setData("Text", angular.toJson(scope.$eval(attr.dndDraggable)));
@@ -127,14 +141,12 @@ angular.module('dndLists', [])
             case "move":
               $parse(attr.dndMoved)(scope, {event: event});
               break;
-
             case "copy":
               $parse(attr.dndCopied)(scope, {event: event});
               break;
-
-            default:
-              $parse(attr.dndDragend)(scope, {event: event});
           }
+
+          $parse(attr.dndDragend)(scope, {event: event});
         });
 
         // Clean up
